@@ -1,0 +1,504 @@
+<h1>Bluetooth test</h1>
+<button type="button" onclick="onButtonClick()">requestDevice</button>
+<h3>Live Output</h3>
+<div id="output" class="output">
+  <div id="content"></div>
+  <div id="status"></div>
+  <pre id="log"></pre>
+</div>
+
+<script>
+
+function sleep(ms) {
+    console.log('Sleeping ' + ms + ' milisecond...');
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function log(line) {
+    document.querySelector('#log').textContent += line + '\n';
+    console.log(line);
+}
+
+class SensorTag {
+    static get ID() {
+        return 0xaa80;
+    }
+
+    constructor() {
+        console.log('Created!');
+    }
+
+    async connect() {
+        let options = {};
+        //options.acceptAllDevices = true;
+        options.services = [ SensorTag.ID ];
+        options.optionalServices = [
+            InformationService.UUID, 
+            BatteryService.UUID, 
+            IRSensor.UUID, 
+            MovementSensor.UUID,
+            HumiditySensor.UUID,
+            BarometricPressureSensor.UUID,
+            OpticalSensor.UUID,
+        ];
+        options.filters = [{name: "CC2650 SensorTag"}];
+
+        console.log('Requesting Bluetooth Device...');
+        this.device = await navigator.bluetooth.requestDevice(options);
+        log('> Name:             ' + this.device.name);
+        log('> Id:               ' + this.device.id);
+        log('> Connected:        ' + this.device.gatt.connected);
+        this.device.addEventListener('gattserverdisconnected', this.onDisconnected);
+
+        console.log('Connecting to GATT Server...');
+        this.server = await this.device.gatt.connect();
+
+        return this.server;
+    }
+
+    async disconnect() {
+        await this.server.disconnect();
+    }
+
+    onDisconnected() {
+        log('> Bluetooth Device disconnected');
+    }
+
+    async Information() {
+        console.log('Getting Device Information Service...');
+        const service = await this.server.getPrimaryService(InformationService.UUID);
+        return new InformationService(service);  
+    }
+
+    async Battery() {
+        console.log('Getting Battery Service...');
+        const service = await this.server.getPrimaryService(BatteryService.UUID);
+        return new BatteryService(service);
+    }
+
+    async IRSensor() {
+        console.log('Getting IRSensor...');
+        const service = await this.server.getPrimaryService(IRSensor.UUID);
+        return new IRSensor(service);  
+    }
+
+    async MovementSensor() {
+        console.log('Getting IR Sensor...');
+        const service = await this.server.getPrimaryService(MovementSensor.UUID);
+        return new MovementSensor(service);  
+    }
+    async HumiditySensor() {
+        console.log('Getting Humidity Sensor...');
+        const service = await this.server.getPrimaryService(HumiditySensor.UUID);
+        return new HumiditySensor(service);  
+    }
+
+    async BarometricPressureSensor() {
+        console.log('Getting Barometric Pressure Sensor...');
+        const service = await this.server.getPrimaryService(BarometricPressureSensor.UUID);
+        return new BarometricPressureSensor(service);  
+    }
+
+    async OpticalSensor() {
+        console.log('Getting Optical Sensor...');
+        const service = await this.server.getPrimaryService(OpticalSensor.UUID);
+        return new OpticalSensor(service);  
+    }
+}
+
+class InformationService {
+    static get UUID() {
+        return 'device_information';
+    }
+
+    constructor(service) {
+        this.service = service;
+    }
+}
+
+class BatteryService {
+    static get UUID() {
+        return 'battery_service';
+    }
+
+    constructor(service) {
+        this.service = service;
+    }
+
+    async getBatteryLevel() {
+        console.log('Getting Battery Level Characteristic...');
+        const characteristic = await this.service.getCharacteristic('battery_level');
+
+        console.log('Reading Battery Level...');
+        const value = await characteristic.readValue();
+
+        return value.getUint8(0);
+    }
+}
+
+class Sensor {
+    static getUUID(key) {
+        return 'f000' + key.toString(16) + '-0451-4000-b000-000000000000';
+    }
+
+    constructor(service, base) {
+        this.service = service;
+        this.base = base;
+    }
+
+    async getCharacteristic(id) {
+        console.log(this.constructor.name + ' Getting ' + id.toString(16) + ' Characteristic...');
+        return await this.service.getCharacteristic(Sensor.getUUID(id));       
+    }
+
+    async getDataCharacteristic() {
+        return this.getCharacteristic(this.base + 1);
+    }
+
+    async getConfigCharacteristic() {
+        return this.getCharacteristic(this.base + 2);
+    }
+
+    async getPeriodCharacteristic() {
+        return this.getCharacteristic(this.base + 3);
+    }
+
+    async setEnabled(b) {
+        const characteristic = await this.getConfigCharacteristic();       
+        console.log(this.constructor.name + ': Enabling Sensor...');
+        const i = b ? 1 : 0;
+        await characteristic.writeValue(new Uint8Array([i]));
+    }
+
+    async setPeriod(msec) {
+        const characteristic = await this.getPeriodCharacteristic();       
+        console.log(this.constructor.name + ': Setting Period...');
+        await characteristic.writeValue(new Uint8Array([msec]));
+    }
+
+    async startNotifications(listener) {
+        const characteristic = await this.getDataCharacteristic();
+        characteristic.addEventListener('characteristicvaluechanged', listener); 
+        console.log(this.constructor.name + ': Starting Notification...');
+        await characteristic.startNotifications();
+    }
+
+    async stopNotifications(listener) {
+        const characteristic = await this.getDataCharacteristic();
+        console.log(this.constructor.name + ': Stopping Notification...');
+        await characteristic.stopNotifications();       
+        characteristic.removeEventListener('characteristicvaluechanged', listener); 
+    }
+}
+
+class IRSensor extends Sensor {
+    static get BASE() { return 0xAA00; }
+    static get UUID() {
+        return super.getUUID(IRSensor.BASE);
+    }
+
+    constructor(service) {
+        super(service, IRSensor.BASE);
+    }
+
+    async getData() {
+        const characteristic = await super.getDataCharacteristic();       
+      
+        console.log('Reading IR Sensor data...');
+        const value = await characteristic.readValue();
+        return IRSensor.convertTemperatures(value);
+    }
+
+    static convertTemperatures(value) {
+        const o = IRSensor.convertObjectTemperature(value);
+        const a = IRSensor.convertAmbientTemperature(value);
+        return [o, a];
+    }
+
+    static convertObjectTemperature(value) {
+        return IRSensor.convetTemperature(value.getUint16(0, true));
+    }
+    
+    static convertAmbientTemperature(value) {
+        return IRSensor.convetTemperature(value.getUint16(2, true));
+    }
+
+    static convetTemperature(rawData) {
+        return (rawData >> 2) * 0.03125;
+    }
+}
+
+class MovementSensor extends Sensor {
+    static get BASE() { return 0xAA80; }
+    static get UUID() {
+        return super.getUUID(MovementSensor.BASE);
+    }
+
+    constructor(service) {
+        super(service, MovementSensor.BASE);
+    }
+
+    async setEnabled(b) {
+        const characteristic = await super.getConfigCharacteristic();       
+        
+        console.log('Enabling Movement Sensor...');
+        const i = b ? 0xff : 0x00;
+        await characteristic.writeValue(new Uint16Array([i]));
+        console.log('Enabling Movement Sensor done');
+    }
+
+    async getData() {
+        const characteristic = await super.getDataCharacteristic();
+
+        console.log('Reading Movement Sensor data...');
+        const value = await characteristic.readValue();
+        const [gx, gy, gz] = MovementSensor.convertGyros(value);
+        const [ax, ay, az] = MovementSensor.convertAccs(value);
+        const [mx, my, mz] = MovementSensor.convertMags(value);
+        return [gx,gy,gz,ax,ay,az,mx,my,mz]
+    }
+
+    static convertGyros(value) {
+        const gx = MovementSensor.convertGyro(value.getInt16(0, true));
+        const gy = MovementSensor.convertGyro(value.getInt16(2, true));
+        const gz = MovementSensor.convertGyro(value.getInt16(4, true));
+        return [gx, gy, gz];
+    }
+
+    static convertGyro(rawData) {
+        return (rawData * 1.0) / (65536 / 500);
+    }
+
+    static convertAccs(value) {
+        const ax = MovementSensor.convertAcc(value.getInt16(6, true));
+        const ay = MovementSensor.convertAcc(value.getInt16(8, true));
+        const az = MovementSensor.convertAcc(value.getInt16(10, true));
+        return [ax, ay, az];
+    }
+
+    static convertAcc(rawData) {
+        return (rawData * 1.0) / (32768/2);
+    }
+
+    static convertMags(value) {
+        const mx = MovementSensor.convertMag(value.getInt16(12, true));
+        const my = MovementSensor.convertMag(value.getInt16(14, true));
+        const mz = MovementSensor.convertMag(value.getInt16(16, true));
+        return [mx, my, mz];
+    }
+
+    static convertMag(rawData) {
+        return 1.0 * rawData;
+    }
+}
+
+class HumiditySensor extends Sensor {
+    static get BASE() { return 0xAA20; }
+    static get UUID() {
+        return super.getUUID(HumiditySensor.BASE);
+    }
+
+    constructor(service) {
+        super(service, HumiditySensor.BASE);
+    }
+
+    async getData() {
+        const characteristic = await super.getDataCharacteristic();
+
+        console.log('Reading Humidity Sensor data...');
+        const value = await characteristic.readValue();
+        const t = HumiditySensor.converTemperature();
+        const h = HumiditySensor.converHumidity();
+
+        return [h, t];
+    }
+
+    static converTemperature(value) {
+        const rawData = value.getUint16(0, true);
+        return (rawData * 1.0 / 65536) * 165 - 40;
+    }
+
+    static converHumidity(value) {
+        const rawData = value.getUint16(2, true);
+        const noFlagData = rawData & ~0x0003;
+        return (noFlagData * 1.0/ 65536) * 100;
+    }
+}
+
+class BarometricPressureSensor extends Sensor {
+    static get BASE() { return 0xAA40; }
+    static get UUID() {
+        return super.getUUID(BarometricPressureSensor.BASE);
+    }
+
+    constructor(service) {
+        super(service, BarometricPressureSensor.BASE);
+    }
+    
+    async getPeriodCharacteristic() {
+        return this.getCharacteristic(this.base + 4);
+    }
+
+    async getData() {
+        const characteristic = await super.getDataCharacteristic();
+
+        console.log('Reading Barometric Pressure Sensor data...');
+        const value = await characteristic.readValue();
+        const t = BarometricPressureSensor.converTemperature(value);
+        const p = BarometricPressureSensor.converPressure(value);
+
+        return [p, t];
+    }
+    
+    static converTemperature(value) {
+        const rawData1 = value.getUint16(0, true);
+        const rawData2 = value.getUint8(2, true);
+        return (rawData1 + rawData2*0xffff) / 100.0;
+    }
+
+    static converPressure(value) {
+        const rawData1 = value.getUint16(3, true);
+        const rawData2 = value.getUint8(5, true);       
+        return (rawData1 + rawData2*0xffff) / 100.0;
+    }
+}
+
+class OpticalSensor extends Sensor {
+    static get BASE() { return 0xAA70; }
+    static get UUID() {
+        return super.getUUID(OpticalSensor.BASE);
+    } 
+    
+    constructor(service) {
+        super(service, OpticalSensor.BASE);
+    }
+
+    async getData() {
+        const characteristic = await super.getDataCharacteristic();
+
+        console.log('Reading Optical Sensor data...');
+        const value = await characteristic.readValue();
+        const l = OpticalSensor.converLightIntesity(value);
+
+        return l;
+    }
+    
+    static converLightIntesity(value) {
+        const rawData = value.getUint16(0, true);
+        const m = rawData & 0x0FFF;
+        let e = (rawData & 0xF000) >> 12;
+        e = (e == 0) ? 1 : 2 << (e - 1);
+        return m * (0.01 * e);
+    }
+}
+
+function onIRSensorNotification(event) {
+    const value = event.target.value;
+    const [ot, at] = IRSensor.convertTemperatures(value);
+    log('IR Sensor: Object Temperature[degC]: ' + ot);
+    log('IR Sensor: Ambient Temperature[degC]: ' + at);
+}
+
+function onMovementSensorNotification(event) {
+    const value = event.target.value;
+    const [gx,gy,gz] = MovementSensor.convertGyros(value);
+    const [ax,ay,az] = MovementSensor.convertAccs(value);
+    const [mx,my,mz] = MovementSensor.convertMags(value);
+    log('Movement Sensor: Gyro: ' + gx + ', ' + gy + ', ' + gz);
+    log('Movement Sensor: Acc: ' + ax + ', ' + ay + ', ' + az);
+    log('Movement Sensor: Mag: ' + mx + ', ' + my + ', ' + mz);
+}
+
+function onHumiditySensorNotification(event) {
+    const value = event.target.value;
+    const h = HumiditySensor.converHumidity(value);
+    const t = HumiditySensor.converTemperature(value);
+    log('Humidity Sensor: Humidity[%]: ' + h);
+    log('Humidity Sensor: Temperature:[degC] ' + t);
+}
+
+function onBarometricPressureNotification(event) {
+    const value = event.target.value;
+    const p = BarometricPressureSensor.converPressure(value);
+    const t = BarometricPressureSensor.converTemperature(value);
+    log('Barometric Pressure Sensor: Pressure[hPa]: ' + p);
+    log('Barometric Pressure Sensor: Temperature[degC]: ' + t); 
+}
+
+function onOpticalSensorNotification(event) {
+    const value = event.target.value;
+    const lux = OpticalSensor.converLightIntesity(value);
+    log('Optical Pressure Sensor: Light Intensity[lux]: ' + lux);
+}
+
+async function onButtonClick() {
+    try {
+        const sensorTag = new SensorTag();
+        const server = await sensorTag.connect();
+        const info = await sensorTag.Information();
+        const battery = await sensorTag.Battery();
+        const level = await battery.getBatteryLevel();
+        log('> Battery Level is ' + level + '%');
+
+        const irSensor = await sensorTag.IRSensor();
+        await irSensor.setEnabled(true);
+        const movementSensor = await sensorTag.MovementSensor();
+        movementSensor.setEnabled(true);
+        const huimiditySensor = await sensorTag.HumiditySensor();
+        huimiditySensor.setEnabled(true);
+        const barometricPressureSensor = await sensorTag.BarometricPressureSensor();
+        barometricPressureSensor.setEnabled(true);
+        const opticalSensor = await sensorTag.OpticalSensor();
+        opticalSensor.setEnabled(true);
+
+        await sleep(3000);
+
+        await irSensor.setPeriod(0x64);
+        await irSensor.startNotifications(onIRSensorNotification);
+        await movementSensor.setPeriod(0x64);
+        await movementSensor.startNotifications(onMovementSensorNotification);
+        await huimiditySensor.setPeriod(0x64);
+        await huimiditySensor.startNotifications(onHumiditySensorNotification);
+        await barometricPressureSensor.setPeriod(0x64);
+        await barometricPressureSensor.startNotifications(onBarometricPressureNotification);
+        await opticalSensor.setPeriod(0x64);
+        await opticalSensor.startNotifications(onOpticalSensorNotification);
+
+        await sleep(10000);
+
+        await irSensor.stopNotifications();
+        await movementSensor.stopNotifications();
+        await huimiditySensor.stopNotifications();
+        await barometricPressureSensor.stopNotifications();
+        await opticalSensor.stopNotifications();
+/*
+        const [ot, at] = await irSensor.getData();
+        log('IR Sensor: Object Temperature[degC]: ' + ot);
+        log('IR Sensor: Ambient Temperature[degC]: ' + at);
+
+        const [gx,gy,gz,ax,ay,az,mx,my,mz] = await movementSensor.getData();
+        log('Movement Sensor: Gyro: ' + gx + ', ' + gy + ', ' + gz);
+        log('Movement Sensor: Acc: ' + ax + ', ' + ay + ', ' + az);
+        log('Movement Sensor: Mag: ' + mx + ', ' + my + ', ' + mz);
+
+        const [h, ht] = await huimiditySensor.getData();
+        log('Humidity Sensor: Humidity[%]: ' + h);
+        log('Humidity Sensor: Temperature:[degC] ' + ht);
+
+        const [p, pt] = await barometricPressureSensor.getData();
+        log('Barometric Pressure Sensor: Pressure[hPa]: ' + p);
+        log('Barometric Pressure Sensor: Temperature[degC]: ' + pt);  
+        
+        const lux = await opticalSensor.getData();
+        log('Optical Pressure Sensor: Light Intensity[lux]: ' + lux);
+        
+*/
+        await sensorTag.disconnect();
+    } catch(error) {
+        log('Argh! ' + error);
+        log(error.stack);
+    }
+}
+
+</script>
+
